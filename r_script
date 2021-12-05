@@ -1,0 +1,1387 @@
+---
+title: "Nursing home COVID data from CMS"
+author: "[YOUR_NAME_HERE]"
+date: "`r format(Sys.time(), '%b. %d, %Y')`"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+
+# Note that some of the packages below may be included in the tidyverse. My apologies for duplication. Thank you, as always, to Hadley Wickham and his army of collaborators who keep the tidyverse running for us. 
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(swirl)
+library(digest)
+library(rjson)
+library(jsonlite)
+library(knitr)
+library(janitor)
+library(readxl)
+library(lubridate)
+
+# You only need tinytex in this script if your intention is to output the summary as a PDF. If you don't intend to do that and you're OK with using knitR to output it only as HTML, you don't have to install or use tinytex.
+# library(tinytex)
+library(skimr)
+library(visdat)
+library(snakecase)
+library(english)
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# This setting will round off digits to one decimal. 
+options(digits=1)
+
+```
+
+
+```{r grab_the_data, eval=TRUE, echo=FALSE, include=FALSE}
+
+# If you want to clear out all the variables in your R workspace, I like to do this, you don't have to and you can leave it commented-out.
+# rm(list=ls()) 
+
+# Set today's date
+todays_date <- format(Sys.Date(), '%d %B, %Y')
+
+todays_date_in_sql_format <- format(Sys.Date(), '%Y-%m-%d')
+
+# Input the name of your state here. This will be used in graphic chatter. 
+my_state_name <- "Georgia"
+
+# Input the two-letter state abbreviation for your state here, so that this script will pull down and analyze the correct state's information. 
+my_state_abbreviation <- "GA"
+
+# This line will need to be updated with whatever the date is for the CMS new API endpoint. This will be explained below. 
+date_of_end_of_data_week <- "2021-11-21" %>% print()
+
+# Take that date and format it nicely
+data_week_nicely_formatted <- format(as.Date(date_of_end_of_data_week), "%b. %d, %Y") %>% print()
+
+# Let's change  to a new working directory for this ... if you feel so inclined. Otherwise, just leave these next several lines commented-out ... 
+
+# Show my working directory
+#getwd()
+
+# base_wd <- "[YOUR_FILE_PATH_HERE]"
+
+# Assemble the pieces of the file path for the new working directory
+# newwd_path <- paste0(base_wd, "data_for_week_ending_", date_of_end_of_data_week, "/") %>% print()
+
+# This next line would actually set the new working directory, if you want to do this. Otherwise, leave it commented-out. 
+# setwd(newwd_path)
+# If you get an error here .. have you remembered to first manually create the appropriate directory for this week in the correct folder? Are the slash marks in your file path forward-leaning and not backwards-leaning? 
+
+# Show my working directory to make sure it has updated to the new folder. 
+# getwd()
+
+# WARNING: Each new week's data has its own json endpoint on the CMS website! So you will need to update this endpoint with the correct endpoint for the data week you want!! The complete listing of endpoints by week is here as of Aug. 30, 2021: https://data.cms.gov/covid-19/covid-19-nursing-home-data/api-docs
+
+# The main page of info for this data set is here: https://data.cms.gov/covid-19/covid-19-nursing-home-data
+
+# More at https://data.cms.gov/api-docs
+
+# WARNING (YES, ANOTHER ONE): The CMS data APIs will only give you 1,000 records at a time. This script will get around that issue by only pulling down the records for a single state for a single data week, and we do that by adding stuff onto the end of the API endpoint to make it filter.
+
+# The endpoint will always end with a long combination of alphanumeric gibberish, which you will then need to follow with a forward slash, followed by this little string to tell it to filter to, for example, just the Georgia facilities: ?filter[provider_state]=GA
+# And yes, that question mark at the beginning is part of the string itself, so don't erase that. It's there for a reason.
+
+# So if the endpoint looks to you like this:
+  # https://data.cms.gov/data-api/v1/dataset/9840e2af-7398-43f7-9693-2f8b6ba27be1/data
+# Then the *actual* endpoint with the Georgia filtering on it would actually be this:
+# https://data.cms.gov/data-api/v1/dataset/9840e2af-7398-43f7-9693-2f8b6ba27be1/data?filter[provider_state]=GA
+
+# But that will still only give you 1,000 rows of the Georgia data -- because it's giving you all the available weeks' data for all the 360 or so Georgia nursing homes. Because they include all the previous weeks' data in the same file with the week you actually want, the 1,000-row cutoff will get you an incomplete data set (for Georgia, in this case. Your mileage may vary if you are in another state). So we also need the API to filter further down to just the records for the week we want, too. So, on these lines coming up, type in the date of the Sunday of the week for which you want the data, in the format of YYYY-MM-DD, and run that line, and save it as a variable. We will then use the correct week_i_want variable to plug into a fully assembled endpoint. 
+
+# Be sure to add the new week of data to this list.
+week_i_want_09_05_21 <- "2021-09-05"
+
+week_i_want_09_12_21 <- "2021-09-12"
+
+week_i_want_09_19_21 <- "2021-09-19"
+
+week_i_want_09_26_21 <- "2021-09-26"
+
+week_i_want_10_03_21 <- "2021-10-03"
+
+week_i_want_10_10_21 <- "2021-10-10"
+
+week_i_want_10_17_21 <- "2021-10-17"
+
+week_i_want_10_24_21 <- "2021-10-24"
+
+week_i_want_10_31_21 <- "2021-10-31"
+
+week_i_want_11_07_21 <- "2021-11-07"
+
+week_i_want_11_14_21 <- "2021-11-14"
+
+week_i_want_11_21_21 <- "2021-11-21"
+
+# Change the right side of this to point to whatever the variable is for the latest week of data
+latest_week <- week_i_want_11_21_21
+
+# Change the right side of this to point to whatever the variable is for the *previous* week of data. Yep, you need both the last week and the previous week to fully use this script. We'll pull down the latest week's data, then we'll pull down the previous week's data. 
+previous_week <- week_i_want_11_14_21
+
+# This next line is a holdover from when the API endpoint required a timestamp in the timestamp format. The %20 at the beginning was intentional because it would become part of our endpoint and represent the blank space as needed. CMS altered the API in about October 2021 or so to remove the need for the timestamp. But I'm keeping it here in case they decide to require it again, without telling us ... 
+zero_timestamp <- "%2000:00:00"
+
+# This is our current endpoint for this week as of this writing, set up for the addition of the state abbreviation. You will need to sub in the proper weekly endpoint here with the state filter string on it. The new endpoint will be on the CMS API web pages linked-to above.  	
+endpoint_main <- "https://data.cms.gov/data-api/v1/dataset/2534142f-b0e6-4e0c-baf7-7854adf909d7/data?size=1000&offset=0&filter[provider_state]="
+
+# This will combine endpoint_main with the two-letter state abbreviation we saved at the very beginning of this script. 
+j <- paste0(endpoint_main, my_state_abbreviation, sep="") %>% print()
+
+# Now, to add more filtering. As of Oct. 15, 2021, it appears the API no longer wants the timestamp as part of the week_ending filter. It also seems to have better results with the size = 100 and offset set to 0. 
+our_full_endpoint_latest_week <- c(j, "&filter[week_ending]=", latest_week)  %>%  print()
+
+# Step 2 of assembling the full endpoint; it puts all the pieces together without spaces. 
+our_full_endpoint_latest_week <- paste0(our_full_endpoint_latest_week, collapse = "") %>%  print()
+
+# OK, now the full endpoint is assembled, filtering down to just the data of the state we want, and just the rows for the week we want. In Georgia's case, the final number of rows we receive back should be roughly 360 or so, corresponding to the number of skilled nursing facilities in the state, so we won't be cut off by the API's 1,000-record cutoff for JSON. So now, run this next line. It may take a few minutes for R to complete this next line. After you run this, it is generally a good time to get up and drink some water, go to the restroom, check your mailbox, get yourself a Coke, etc. I also like to walk around the building where I work, if it's not raining out. 
+j_latest_week <-  fromJSON(our_full_endpoint_latest_week)
+
+# Tell us how many rows of data we just pulled down from the API. This number should be the same as the number of nursing homes in your state. In Georgia's case, it should be roughly 359 or 360 or so. If it's way more than that, then we know we have multiple weeks' worth of data in there, so we've skipped a step somewhere, and we will need to go back and fix that. 
+nrow(j_latest_week)
+
+# Save a caption for all our graphics right here. You'll want to change this phrasing to add your own name.
+graphic_caption <- "Source: Analysis of data from federal Centers for Medicare and Medicaid Services\nGraphic by [YOUR NAME HERE]"
+
+# I like to include these little print-outs to the screen just so that I leave a bread crumb trail for myself in the R Studio Console that reminds me what section of the script I've just been working on. You are welcome to disregard these or comment them out. 
+print("This ends the chunk called Grab the Data.")
+
+```
+
+
+```{r begin_cleanin_and_filterin_latest_week, eval=TRUE, echo=FALSE, include=FALSE}
+
+# This next line will reset the new working directory, if you want to do so. Apparently we have to do this with each new chunk in this script because R will reset the working directory at the end of each chunk. If you don't want to change your working directory, just leave this next line commented-out. 
+# setwd(newwd_path)
+
+# Let's fix the column names with the janitor package because they are a bear
+j_latest_week_a <- j_latest_week %>%  janitor::clean_names()
+
+# Let's stop here for a second and write and write the latest week's data out to a file in case we need to save it. We'll also save the column names as a file and write them out, too. 
+
+warehouse_table_name_this_week_list <- c("nursing_homes_covid_", date_of_end_of_data_week, ".csv")
+
+warehouse_table_this_week <- paste0(warehouse_table_name_this_week_list, collapse="") %>%  print()
+
+warehouse_table_this_week <- str_replace_all(warehouse_table_this_week, "-", "_") %>% print()
+
+warehouse_table_this_week <- str_replace_all(warehouse_table_this_week, ".csv", "") %>% print()
+
+# Write this out to the computer as CSV as a backup until we work out the issues surrounding writing the table to the Warehouse.
+write.csv(j_latest_week_a, warehouse_table_this_week, row.names=FALSE)
+
+# Now, we're going to save the names of the table into a separate variable. 
+table_colnames <- colnames(j_latest_week_a)
+
+# Write the stored column headers out to a CSV so we can save them
+write.csv(table_colnames, "orig_table_colnames.csv", row.names=FALSE)
+
+# Save the column headers with the matrix indexes on them
+table_names_matrix <- matrix(colnames(j_latest_week_a))
+
+# Write the stored column headers out to a CSV so we can save them too though this may be duplicative of step above. 
+write.csv(table_names_matrix, "orig_table_colnames_matrix.csv", row.names=FALSE)
+
+# Copy j_latest_week_a to a new file, because we're going to strip the column headers off of it so we can write it into the Warehouse without those long-ass names. 
+table_for_writing_to_warehouse <- j_latest_week_a
+
+# This actually strips the column headers off. 
+names(table_for_writing_to_warehouse)<-NULL
+
+dim(j_latest_week_a)
+
+summary(j_latest_week_a)
+
+# Create Exploratory Data Analysis report of the table with the DataExplorer package. This will take a minute, so I tend to keep it mostly commented-out. When it finishes, the HTML report will pop up in your default browser. Keep this commented-out if you like. 
+# create_report(j_latest_week_a)
+
+# Convert this date field to a date field format, rather than a character format, so we can work with it as a date
+j_latest_week_a$week_ending <- as.Date(j_latest_week_a$week_ending)
+
+# Create a new column and fill it with "latest week" 
+j_latest_week_a$which_week <- "latest week"
+
+# Now, use Lubridate to help with the date conversion, this step may not be necessary, but it doesn't hurt otherwise.
+j_latest_week_a$week_ending <- ymd(j_latest_week_a$week_ending)
+
+j_latest_week_b <- j_latest_week_a %>% select("week_ending", "federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code", "provider_phone_number", "county", "submitted_data", "residents_weekly_admissions_covid_19", "residents_total_admissions_covid_19", "residents_weekly_confirmed_covid_19", "residents_total_confirmed_covid_19", "residents_weekly_suspected_covid_19", "residents_total_suspected_covid_19", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_confirmed_covid_19", "staff_total_confirmed_covid_19", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths", "weekly_resident_confirmed_covid_19_cases_per_1_000_residents", "weekly_resident_covid_19_deaths_per_1_000_residents", "total_resident_confirmed_covid_19_cases_per_1_000_residents", "total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases", "three_or_more_confirmed_covid_19_cases_this_week", "initial_confirmed_covid_19_case_this_week", "number_of_residents_with_a_new_positive_covid_19_test_result","number_of_staff_and_or_personnel_with_a_new_positive_covid_19_test_result", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time", "which_week")
+
+j_latest_week_b[,c("residents_weekly_admissions_covid_19", "residents_total_admissions_covid_19", "residents_weekly_confirmed_covid_19", "residents_total_confirmed_covid_19", "residents_weekly_suspected_covid_19", "residents_total_suspected_covid_19", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_confirmed_covid_19", "staff_total_confirmed_covid_19", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths", "weekly_resident_confirmed_covid_19_cases_per_1_000_residents", "weekly_resident_covid_19_deaths_per_1_000_residents", "total_resident_confirmed_covid_19_cases_per_1_000_residents", "total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases", "number_of_residents_with_a_new_positive_covid_19_test_result",  "number_of_staff_and_or_personnel_with_a_new_positive_covid_19_test_result", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time")] <- sapply(j_latest_week_b[,c("residents_weekly_admissions_covid_19", "residents_total_admissions_covid_19", "residents_weekly_confirmed_covid_19", "residents_total_confirmed_covid_19", "residents_weekly_suspected_covid_19", "residents_total_suspected_covid_19", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_confirmed_covid_19", "staff_total_confirmed_covid_19", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths", "weekly_resident_confirmed_covid_19_cases_per_1_000_residents", "weekly_resident_covid_19_deaths_per_1_000_residents", "total_resident_confirmed_covid_19_cases_per_1_000_residents", "total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases", "number_of_residents_with_a_new_positive_covid_19_test_result",  "number_of_staff_and_or_personnel_with_a_new_positive_covid_19_test_result", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time")],as.numeric)
+
+print("This completes the begin_cleanin_and_filterin_latest_week chunk.")
+
+```
+
+
+```{r analysis_resident_weekly_covid_deaths, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+# This next section will carve out the death-related columns and output it to a CSV file.
+
+deaths_data_file <- j_latest_week_b[,c("week_ending", "federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code", "county", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths","weekly_resident_covid_19_deaths_per_1_000_residents","total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases")]
+
+# Count the number of records in the deaths_data_file. This should equal to the number of nursing home facilities in your state. In Georgia's case, this should equal 359 or 360 or thereabouts. If you get a number different from the number of nursing homes in your state, that's a red flag that something's gone wrong. 
+nrow(deaths_data_file)
+
+# Create new column with combined name and city of facility, which we will use for presentation purposes. First, we need to take the provider_name and provider_city fields and run them thru a function of the snakecase package to get them out of all-caps. This will take 2 lines. 
+
+deaths_data_file$provider_name <- to_mixed_case(deaths_data_file$provider_name, sep_out = " ") %>%  print()
+
+deaths_data_file$provider_city <- to_mixed_case(deaths_data_file$provider_city, sep_out = " ") %>%  print()
+
+# Now, we actually concatenate the name and city.
+deaths_data_file$provider_name_and_city <- paste(trimws(deaths_data_file$provider_name), " (", deaths_data_file$provider_city, ")") %>%  print()
+
+# Take out the annoying extra spaces in the new column. This will take 2 lines of code. 
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, "  \\( ", " \\(") %>%  print()
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " \\)", "\\)") %>%  print()
+
+# Other fixes in the names 
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " And ", " and ") 
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " Of ", " of ") %>%  print()
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " The ", " the ") %>%  print()
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " Llc ", " LLC ") %>%  print()
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " Ltc ", " LTC ") %>%  print()
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " At ", " at ") %>%  print()
+
+deaths_data_file$provider_name_and_city <- str_replace(deaths_data_file$provider_name_and_city, " Nsg ", " Nursing ") %>%  print()
+
+# Save the max
+max_res_weekly_covid_deaths <- max(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE) %>%  print()
+
+# Pull out the combined name and city of the facilit(ies) that had the maximum weekly residential cases last week. 
+fac_max_residents_covid_deaths_latest_week <- deaths_data_file[which(deaths_data_file$residents_weekly_covid_19_deaths==max(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# Save as a text list the facilities with the max deaths, all properly formatted with "and" in the right place, thanks to the KnitR combine_words command
+fac_max_residents_covid_deaths_latest_week_as_text_list <- knitr::combine_words(fac_max_residents_covid_deaths_latest_week) %>%  print()
+
+# How many facilities had our maximum deaths? 
+num_fac_max_residents_covid_deaths_latest_week <- length(fac_max_residents_covid_deaths_latest_week) %>%  print()
+
+# Save the min
+min_res_weekly_covid_deaths <- min(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE) %>%  print()
+
+# Pull out the combined name and city of the facilit(ies) that had the minimum weekly residential cases last week. 
+fac_min_residents_covid_deaths_latest_week <- deaths_data_file[which(deaths_data_file$residents_weekly_covid_19_deaths==min(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# How many facilities had our minimum deaths? 
+num_fac_min_residents_covid_deaths_latest_week <- length(fac_min_residents_covid_deaths_latest_week) %>%  print()
+
+# What percentage of facilities reported the minimum deaths?
+pct_fac_reporting_min_res_covid_deaths_latest_wk <- ((num_fac_min_residents_covid_deaths_latest_week/nrow(deaths_data_file))*100) %>%  print()
+
+# Save the mean
+mean_res_weekly_covid_deaths <- mean(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE) %>%  print()
+
+# Save the median
+median_res_weekly_covid_deaths <- median(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE) %>%  print()
+
+# Standard deviation 
+std_dev_res_weekly_covid_deaths <- sd(deaths_data_file$residents_weekly_covid_19_deaths, na.rm=TRUE) %>%  print()
+
+# Print to screen the outlier values, in order, from smallest to largest, so we can eyeball them. 
+sort(boxplot.stats(deaths_data_file$residents_weekly_covid_19_deaths)$out, decreasing=FALSE)
+
+# Count the number of outliers in resident covid deaths in the latest week. 
+num_outliers_resident_covid_deaths_latest_week <- length(boxplot.stats(deaths_data_file$residents_weekly_covid_19_deaths)$out) %>%  print()
+
+# Save the outliers as a variable. This takes 3 steps: 
+out_res_covid_deaths <- boxplot.stats(deaths_data_file$residents_weekly_covid_19_deaths)$out
+
+out_res_covid_deaths_ind <- which(deaths_data_file$residents_weekly_covid_19_deaths %in% c(out_res_covid_deaths))
+
+out_res_covid_deaths_ind
+
+# Save the names of the outlier facilities (name and city) as a tibble 
+outlier_facilities_resident_covid_deaths_latest_week <- deaths_data_file[out_res_covid_deaths_ind, ] %>%  print()
+
+# Save the names of the facilities as a list properly formatted with "and" in the right place thanks to KnitR's combine_words command
+outlier_facilities_resident_covid_deaths_latest_week_as_text_list <- knitr::combine_words(outlier_facilities_resident_covid_deaths_latest_week$provider_name_and_city) %>% print()
+
+# Number of NA's in this metric
+num_nas_res_weekly_covid_deaths <- sum(is.na(deaths_data_file$residents_weekly_covid_19_deaths)) %>%  print()
+
+# Save the list of NA's as a text list
+nas_res_weekly_covid_deaths_list_as_text <- knitr::combine_words(deaths_data_file$provider_name_and_city[which(is.na(deaths_data_file$residents_weekly_covid_19_deaths))]) %>%  print()
+
+print("This completes the chunk called analysis_resident_weekly_covid_deaths.")
+
+```
+
+### Intro
+
+Let's get started. Today's date is `r format(as.Date(Sys.Date()), "%b. %d, %Y")`. This latest data is for the week ending `r data_week_nicely_formatted`. The data in this summary said to be for the previous week is for the week ending `r format(as.Date(previous_week), "%b. %d, %Y")`
+
+All data here was extracted using the Centers for Medicare and Medicaid Services' [Application Programming Interface for data regarding COVID in nursing homes](https://data.cms.gov/covid-19/covid-19-nursing-home-data). For technical documentation on the CMS API, [go to this link](https://data.cms.gov/covid-19/covid-19-nursing-home-data/api-docs). The data was extracted in the JSON format (JavaScript object notation) using the R programming language. CMS generally publishes new data around 5 p.m. Eastern time on Thursdays, and the newly released data is generally about two weeks behind. 
+
+The total number of facilities in the latest week of data is `r nrow(deaths_data_file)`. The total number of columns, or fields, in the data set this week is `r ncol(j_latest_week_a)`. A complete listing of all the columns in the data this week is at the end of this summary as an appendix. 
+
+Be aware that while the number of columns in the data generally remains steady from week to week, CMS sometimes removes columns from the dataset; they removed about 50-60 columns in early October 2021. (CMS does this, as far as I can tell, without really telling the users that they are doing it.) Note that not all facilities report each metric each week, and this summary will note how many facilities did not report each data point. 
+
+Most of the metrics included in this summary are presented as both histograms -- which are like bar charts -- and box-and-whisker plots. Boxplots have the added benefit of showing the mean of a dataset and dots for outliers. Note that in some cases, you may not see as many dots as there are outliers, because some dots may be stacked on top of each other. 
+
+This summary was created in R using [the knitR package](https://en.wikipedia.org/wiki/Knitr#:~:text=knitr%20is%20an%20engine%20for,the%20means%20of%20literate%20programming.) and [R Markdown](https://rmarkdown.rstudio.com/). Please note that this summary has not been copy edited. I apologize in advance for all typos and style errors. 
+
+******************
+
+### Resident weekly COVID deaths in latest week of data
+
+*The numbers for these calculations come from the column in the data called "residents_weekly_covid_19_deaths."*
+
+**Maximum deaths at any facility**: `r if (max_res_weekly_covid_deaths==0) {paste0("Zero, which occurred at ", num_fac_max_residents_covid_deaths_latest_week, " of the ", nrow(deaths_data_file), " total facilities in the data this week. That's ", round(((num_fac_max_residents_covid_deaths_latest_week/(nrow(deaths_data_file)))*100),2), "% of the facilities in the data.", sep="")} else if (max_res_weekly_covid_deaths>10) {paste0(max_res_weekly_covid_deaths, " which occurred at ", num_fac_max_residents_covid_deaths_latest_week, " facilities in the data this week. That's ", round(((num_fac_max_residents_covid_deaths_latest_week/(nrow(deaths_data_file)))*100),2), "% of the facilities in the data. We won't list them all here this week because there are too many.", sep="")} else {paste0(max_res_weekly_covid_deaths, " which occurred at ", num_fac_max_residents_covid_deaths_latest_week, " of the ", nrow(deaths_data_file), " total facilities in the data this week. That's ", round(((num_fac_max_residents_covid_deaths_latest_week/(nrow(deaths_data_file)))*100),2), "% of the facilities in the data: ", fac_max_residents_covid_deaths_latest_week_as_text_list, ".", sep="")}`
+
+
+**Minimum deaths at any facility**: `r if (min_res_weekly_covid_deaths==0) {paste0("Zero, which occurred at ", num_fac_min_residents_covid_deaths_latest_week, " of the ", nrow(deaths_data_file), " total facilities in the data this week. That's ", round(((num_fac_min_residents_covid_deaths_latest_week/(nrow(deaths_data_file)))*100),2), "% of the facilities in the data.", sep="")} else if (min_res_weekly_covid_deaths>10) {paste0(min_res_weekly_covid_deaths, " which occurred at ", num_fac_min_residents_covid_deaths_latest_week, " facilities in the data this week. That's ", round(((num_fac_min_residents_covid_deaths_latest_week/(nrow(deaths_data_file)))*100),2), "% of the facilities in the data. We won't list them all here this week because there are too many.", sep="")} else {paste0(min_res_weekly_covid_deaths, " which occurred at ", num_fac_min_residents_covid_deaths_latest_week, " of the ", nrow(deaths_data_file), " total facilities in the data this week. That's ", round(((num_fac_min_residents_covid_deaths_latest_week/(nrow(deaths_data_file)))*100),2), "% of the facilities in the data: ", fac_min_residents_covid_deaths_latest_week_as_text_list, ".", sep="")}`
+
+**Mean deaths**: `r mean_res_weekly_covid_deaths`
+
+**Median deaths**: `r median_res_weekly_covid_deaths`
+
+**Statistical outliers**: `r if (num_outliers_resident_covid_deaths_latest_week>10) {paste0("We had ", num_outliers_resident_covid_deaths_latest_week, " outlier(s) this week. We won't list them all here because there are so many.", sep="")} else if (num_outliers_resident_covid_deaths_latest_week==0) {"No outliers this week."} else {paste0("We had ", num_outliers_resident_covid_deaths_latest_week, " outlier(s) this week. We'll list them in a table below.", sep="")}`
+
+`r if (num_outliers_resident_covid_deaths_latest_week<10 & num_outliers_resident_covid_deaths_latest_week!=0) {knitr::kable(outlier_facilities_resident_covid_deaths_latest_week[,c(11,9)], col.names=c("Facility", "Resident COVID deaths this data week"), row.names = FALSE, digits=1, caption="Statistical outliers: Resident weekly COVID deaths this week")}`
+
+**Did not report this metric**: `r if (num_nas_res_weekly_covid_deaths==0) {"Zero. Every facility reported this metric this week."} else if (num_nas_res_weekly_covid_deaths>10) {paste0(num_nas_res_weekly_covid_deaths, "facilit(ies). We won't list them all.", sep="")} else {paste0(num_nas_res_weekly_covid_deaths, " facilities: ", nas_res_weekly_covid_deaths_list_as_text, ".", sep="")}`
+
+
+```{r res_covid_deaths_latest_week_plots_only, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE, fig.height = 3, fig.align = "center"}
+
+# Actually set the new working directory, if you are so inclined. Otherwise, just leave this commented-out.
+# setwd(newwd_path)
+
+# OK, now, let's make a histogram for residential COVID deaths in the latest week. 
+
+# First, let's create a title for our histogram
+res_weekly_covid_deaths_latest_week_hist_title <- paste0("Histogram: Resident COVID deaths in latest week by facility", collapse="") 
+
+res_weekly_covid_deaths_latest_week_hist_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". ", Words(num_nas_res_weekly_covid_deaths), " facilities did not report\nthis metric.", collapse="") 
+hist_resident_covid_deaths_latest_week <-ggplot(deaths_data_file, aes(x=residents_weekly_covid_19_deaths)) + geom_histogram(color="black", fill="blue", binwidth=1) + labs(title=res_weekly_covid_deaths_latest_week_hist_title,x="COVID deaths by facility", y = "# of facilities", subtitle=res_weekly_covid_deaths_latest_week_hist_subtitle, caption=graphic_caption)
+
+# Show the histogram on the screen.
+hist_resident_covid_deaths_latest_week
+
+# Now, we need to write the histogram out to a file. First step in that is assembling a file name for it
+hist_res_covid_deaths_latest_wk_file_name <- paste0("histogram_res_covid_deaths_latest_wk_", latest_week, ".jpg", collapse="")
+
+# Now we actually write it out to that name in the chosen location. 
+ggsave(hist_res_covid_deaths_latest_wk_file_name, hist_resident_covid_deaths_latest_week)
+
+# Let's do a boxplot next
+
+# First, let's create a title for our box plot
+res_weekly_covid_deaths_latest_week_bp_title <- paste0("Boxplot: Resident COVID deaths in the latest week by facility", collapse="") 
+
+res_weekly_covid_deaths_latest_week_bp_subtitle <- paste0("For",my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". Dots represent outliers.\nMultiple dots may be stacked on top of each other. ", Words(num_nas_res_weekly_covid_deaths), " facilities did not report this metric.", collapse="")
+
+# Tutorial: make a boxplot in ggplot2 with one variable. 
+# https://www.r-bloggers.com/2016/11/make-a-box-plot-with-single-column-data-using-ggplot2-tutorial/
+
+res_weekly_covid_deaths_latest_week_bp <- ggplot(deaths_data_file, aes(x="", y=residents_weekly_covid_19_deaths)) +   geom_boxplot(notch=TRUE) + labs(title=res_weekly_covid_deaths_latest_week_bp_title, y = "Resident COVID deaths by facility", x=" ", caption=graphic_caption, subtitle=res_weekly_covid_deaths_latest_week_bp_subtitle)
+
+res_weekly_covid_deaths_latest_week_bp
+
+# Now, we need to write the box plot out to a file. First step in that is assembling a file name for it
+bp_res_covid_deaths_latest_wk_file_name <- paste0("bp_res_covid_deaths_latest_wk_", latest_week, ".jpg", collapse="") 
+
+# Now we actually write the boxplot out to that name in the chosen location. 
+ggsave(bp_res_covid_deaths_latest_wk_file_name, res_weekly_covid_deaths_latest_week_bp)
+
+```
+
+
+```{r save_deaths_file_data_file, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. If not, just leave this commented-out.
+# setwd(newwd_path)
+
+# OK, so we need to write this out. So, what do you want to call the file? Put in a name here inside the quote marks. 
+name_of_my_file_data_file <-  "cms_nursing_home_vax_covid_death_data_data_file"
+
+# Step 1 of assembling our full file name and path
+name_of_my_file_data_file_list <- c(name_of_my_file_data_file, "_calculated_", todays_date_in_sql_format, ".csv")
+
+# Step 2 of assembling our full file name and path
+name_of_my_file_data_file_full <- paste0(name_of_my_file_data_file_list, collapse = "") %>%  print()
+
+# Now we write our file out to that folder with the specified file name ...  
+write.csv(deaths_data_file, name_of_my_file_data_file_full, row.names=FALSE)
+
+print("This completes the chunk called save_deaths_file_data_file.")
+
+```
+
+
+```{r pull_data_previous_week, eval=TRUE, echo=FALSE, include=FALSE}
+
+# To do the next part, we have to be able to compare the number of COVID cases in each facility in this latest week to the number of COVID cases in each facility *last week*. To do that, we're going to have to ping the CMS API again and pull down (while filtering, yes, again) last week's data. We do this by pinging the same API endpoint J as before (the CMS people appear to turn "off" the last week's API endpoint when they turn "on" the new one on Thursdays), but instead we will doctor it to filter down to just the previous week's data.
+
+# This is step 1 of assembling the full endpoint. We're creating a list of the elements that will go into our endpoint. 
+our_full_endpoint_previous_week <- c(j, "&filter[week_ending]=", previous_week, zero_timestamp)  
+
+our_full_endpoint_previous_week <- c(j, "&filter[week_ending]=", previous_week)  
+
+# Step 2 of assembling the full endpoint; it puts all the pieces together without spaces. 
+our_full_endpoint_previous_week <- paste0(our_full_endpoint_previous_week, collapse = "")
+
+# This will just print out the full endpoint on the screen so you can see it in case you want to make changes
+print(our_full_endpoint_previous_week)
+
+# This will actually pull down the previous week's data. Again, this may take a second. Good time to take a walk, get lunch, go to the bathroom, get a Coke, etc. 
+j_previous_week <- fromJSON(our_full_endpoint_previous_week)
+
+# Show us the fields and first few records in the new table j_previous_week so we can eyeball them. I like eyeballing things. 
+str(j_previous_week)
+
+# Tell us how many rows are in our table j_previous_week. Check to see if it's roughly equal to the number of nursing homes in your state. In Georgia, that should be roughly 360. If you get a number that's way off for your state, that's a red flag that something's not working right.  
+nrow(j_previous_week)
+
+# This is an artifact of previous versions of this script. It just saves the file we're working on by a new name. 
+j_previous_week_a <- j_previous_week
+
+# Convert this date field to a date field format, rather than a character format, so we can work with it as a date
+j_previous_week_a$week_ending <- as.Date(j_previous_week_a$week_ending)
+
+# Add new column "which week" and fill it with phrase "previous week" 
+j_previous_week_a$which_week <- "previous week"
+
+# Now use Lubridate to help with the date conversion, this step may not be necessary, but it won't hurt
+j_previous_week_a$week_ending <- ymd(j_previous_week_a$week_ending)
+
+j_previous_week_b <- j_previous_week_a %>% select("week_ending", "federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code", "provider_phone_number", "county", "submitted_data", "residents_weekly_admissions_covid_19", "residents_total_admissions_covid_19", "residents_weekly_confirmed_covid_19", "residents_total_confirmed_covid_19", "residents_weekly_suspected_covid_19", "residents_total_suspected_covid_19", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_confirmed_covid_19", "staff_total_confirmed_covid_19", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths", "weekly_resident_confirmed_covid_19_cases_per_1_000_residents", "weekly_resident_covid_19_deaths_per_1_000_residents", "total_resident_confirmed_covid_19_cases_per_1_000_residents", "total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases", "three_or_more_confirmed_covid_19_cases_this_week", "initial_confirmed_covid_19_case_this_week", "number_of_residents_with_a_new_positive_covid_19_test_result","number_of_staff_and_or_personnel_with_a_new_positive_covid_19_test_result", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time", "which_week")
+
+j_previous_week_b[,c("residents_weekly_admissions_covid_19", "residents_total_admissions_covid_19", "residents_weekly_confirmed_covid_19", "residents_total_confirmed_covid_19", "residents_weekly_suspected_covid_19", "residents_total_suspected_covid_19", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_confirmed_covid_19", "staff_total_confirmed_covid_19", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths", "weekly_resident_confirmed_covid_19_cases_per_1_000_residents", "weekly_resident_covid_19_deaths_per_1_000_residents", "total_resident_confirmed_covid_19_cases_per_1_000_residents", "total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases", "number_of_residents_with_a_new_positive_covid_19_test_result",  "number_of_staff_and_or_personnel_with_a_new_positive_covid_19_test_result", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time")] <- sapply(j_previous_week_b[,c("residents_weekly_admissions_covid_19", "residents_total_admissions_covid_19", "residents_weekly_confirmed_covid_19", "residents_total_confirmed_covid_19", "residents_weekly_suspected_covid_19", "residents_total_suspected_covid_19", "residents_weekly_all_deaths", "residents_total_all_deaths", "residents_weekly_covid_19_deaths", "residents_total_covid_19_deaths", "staff_weekly_confirmed_covid_19", "staff_total_confirmed_covid_19", "staff_weekly_covid_19_deaths", "staff_total_covid_19_deaths", "weekly_resident_confirmed_covid_19_cases_per_1_000_residents", "weekly_resident_covid_19_deaths_per_1_000_residents", "total_resident_confirmed_covid_19_cases_per_1_000_residents", "total_resident_covid_19_deaths_per_1_000_residents", "total_residents_covid_19_deaths_as_a_percentage_of_confirmed_covid_19_cases", "number_of_residents_with_a_new_positive_covid_19_test_result",  "number_of_staff_and_or_personnel_with_a_new_positive_covid_19_test_result", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time")],as.numeric)
+
+print("This completes the chunk called pull_data_previous_week.")
+
+```
+
+
+
+```{r now_to_rbind_latest_and_previous, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Now we're going to combine our files for the latest week's data and the previous week's data. 
+
+# Now we'll combine them
+both_weeks <- rbind(j_latest_week_b, j_previous_week_b)
+
+both_weeks_b <- both_weeks
+
+# This just creates a copy of the table with a new name. This is an artifact of a previous version of this script. 
+j6 <- both_weeks_b
+
+smallj <- j6
+
+j10 <-smallj[,c("federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code","residents_weekly_confirmed_covid_19", "which_week")]
+
+# Now we're actually going to use pivot_wider
+j7 <- j10 %>% pivot_wider(names_from=which_week, values_from = residents_weekly_confirmed_covid_19, names_sep="_", names_prefix="residents_weekly_confirmed_covid_")
+
+colnames(j7) <- c("federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code", paste0("residents_weekly_confirmed_covid_", str_replace_all("latest week", " ", "_"), collapse=""), paste0("residents_weekly_confirmed_covid_", str_replace_all("previous week", " ", "_"), collapse=""))
+
+# Create new column with combined name and city of facility. First, we need to take the provider_name and provider_city fields and run them thru a function of the snakecase package to get them out of all-caps. This will take 2 lines. 
+
+j7$provider_name <- to_mixed_case(j7$provider_name, sep_out = " ") %>%  print()
+
+j7$provider_city <- to_mixed_case(j7$provider_city, sep_out = " ") %>%  print()
+
+# Create new column with combined name and city of facility. 
+j7$provider_name_and_city <- paste(trimws(j7$provider_name), " (", j7$provider_city, ")") %>%  print()
+
+# Take out the annoying extra spaces in the new column. This will take 2 lines of code. 
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, "  \\( ", " \\(") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " \\)", "\\)") %>%  print()
+
+# Some more name fixes
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " And ", " and ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Of ", " of ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " The ", " the ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Ltc ", " LTC ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Llc ", " LLC ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Nsg ", " Nursing ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " At ", " at ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " For ", " for ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Inc ", " Inc. ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Ctr ", " Center ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Nhc ", " NHC ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, "A G ", "A.G. ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, "Nhc ", "NHC ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, " Ft ", " Fort ") %>%  print()
+
+j7$provider_name_and_city <- str_replace(j7$provider_name_and_city, "Lillian G ", "Lillian G. ") %>%  print()
+
+print("This completes the chunk called now_to_rbind_latest_and_previous.")
+
+```
+
+```{r analysis_latest_week_res_cases, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Next, let's look at what we can tell about the facilities with cases reported this week. 
+
+# Pull out the top 5 facilities with the most weekly cases, print them to the screen.
+j7[order(j7$residents_weekly_confirmed_covid_latest_week,decreasing=T)[1:5],] %>% select(provider_name_and_city)
+
+# How many of our facilities reported 0 residential cases this week? 
+num_fac_0_res_cases_latest_week <- nrow(j7 %>%  filter(residents_weekly_confirmed_covid_latest_week==0))
+
+# What percentage of our facilities reported 0 residential cases this week? 
+pct_fac_0_res_cases_latest_week <- ((nrow(j7 %>%  filter(residents_weekly_confirmed_covid_latest_week==0))/nrow(j7))*100) %>%  print()
+
+# How many NA's in our metric of residential cases for this latest week? 
+nas_residents_weekly_covid_latest_week <- sum(is.na(j7$residents_weekly_confirmed_covid_latest_week)) %>%  print()
+
+# What is the maximum number of weekly residential cases in this latest week? 
+max_residents_weekly_covid_latest_week <- max(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE) %>%  print()
+
+# Pull out the combined name and city of the facility(ies) that had the maximum weekly residential cases last week. 
+fac_max_residents_cases_latest_week <- j7[which(j7$residents_weekly_confirmed_covid_latest_week==max(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# Save a text list the names of the facilities with the max number of cases. 
+fac_max_residents_cases_latest_week_as_text_list <- knitr::combine_words(fac_max_residents_cases_latest_week) %>%  print()
+
+# How many facilities had our maximum value? 
+num_max_fac_res_cases_latest_week <- length(fac_max_residents_cases_latest_week) %>%  print()
+
+# What is the minimum number of weekly residential cases in this latest week? 
+min_residents_weekly_covid_latest_week <- min(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE) %>%  print()
+
+# Pull out combined name and city of facility/facilities that had the min weekly residential cases last week
+fac_min_residents_cases_latest_week <- j7[which(j7$residents_weekly_confirmed_covid_latest_week==min(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# How many facilities had our min value? 
+num_min_fac_res_cases_latest_week <- length(fac_min_residents_cases_latest_week) %>%  print()
+
+pct_fac_reporting_min_res_covid_cases_latest_wk <- ((num_min_fac_res_cases_latest_week/nrow(j7))*100) %>%  print()
+
+# What is the mean of the metric for residents' weekly cases for latest week? Exclude the NA's. 
+mean_residents_weekly_covid_latest_week <- mean(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE) %>%  print()
+
+# What is the median of the metric for residents' weekly cases for latest week? Exclude the NA's. 
+median_residents_weekly_covid_latest_week <- median(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE) %>%  print()
+
+# Standard deviation 
+std_dev_residents_weekly_covid_latest_week <- sd(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE) %>%  print()
+
+# Number of facilities reporting NA's for this metric
+num_nas_res_weekly_covid_cases_latest_wk <- sum(is.na(j7$residents_weekly_confirmed_covid_latest_week)) %>%  print()
+
+# Save the names of the facilities reporting NA's
+facs_reporting_nas_res_weekly_covid_cases_latest_wk <- j7$provider_name_and_city[which(is.na(j7$residents_weekly_confirmed_covid_latest_week))] %>%  print()
+
+# Save as text list the names of the facilities reporting NA's
+facs_reporting_nas_res_weekly_covid_cases_latest_wk_text_list <- knitr::combine_words(facs_reporting_nas_res_weekly_covid_cases_latest_wk) %>%  print()
+
+# Print to screen the outlier values, in order, from smallest to largest, so I can eyeball them. 
+sort(boxplot.stats(j7$residents_weekly_confirmed_covid_latest_week)$out, decreasing=FALSE)
+
+# Count number of outliers in resident covid cases in the latest week. 
+num_outliers_resident_cases_latest_week <- length(boxplot.stats(j7$residents_weekly_confirmed_covid_latest_week)$out) %>%  print()
+
+# Save the outliers as a variable. This takes 3 steps: 
+out_res_case <- boxplot.stats(j7$residents_weekly_confirmed_covid_latest_week)$out
+
+out_res_case_ind <- which(j7$residents_weekly_confirmed_covid_latest_week %in% c(out_res_case))
+
+out_res_case_ind
+
+# Save the names of the outlier facilities (name and city) as a tibble 
+outlier_facilities_resident_cases_latest_week <- j7[out_res_case_ind, ] %>%  print()
+
+# OK, now, let's make a histogram for residential cases in the latest week. 
+
+# First, let's create a title for our histogram
+res_weekly_confirmed_covid_latest_week_hist_title <- paste0("Histogram: Resident confirmed COVID cases in latest week by facility", collapse="") %>%  print()
+
+res_weekly_confirmed_covid_latest_week_hist_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". ", Words(num_nas_res_weekly_covid_cases_latest_wk), " facilities\ndid not report this metric.", collapse="") %>%  print()
+
+hist_resident_cases_latest_week <-ggplot(j7, aes(x=residents_weekly_confirmed_covid_latest_week)) + geom_histogram(color="black", fill="blue", binwidth=1) + labs(title=res_weekly_confirmed_covid_latest_week_hist_title,x="COVID cases by facility", y = "# of facilities", subtitle=res_weekly_confirmed_covid_latest_week_hist_subtitle, caption=graphic_caption)
+
+# Show the histogram on the screen.
+hist_resident_cases_latest_week
+
+# Now, we need to write the histogram out to a file. First step in that is assembling a file name for it
+hist_res_cases_latest_wk_file_name <- paste0("histogram_res_cases_latest_wk_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Now we actually write it out to that name in the chosen location. 
+ggsave(hist_res_cases_latest_wk_file_name, hist_resident_cases_latest_week)
+
+# Let's do a boxplot next
+
+# First, let's create a title for our box plot
+res_weekly_confirmed_covid_latest_week_bp_title <- paste0("Boxplot: Resident confirmed COVID cases in the latest week by facility", collapse="") %>%  print()
+
+# Tutorial: make a boxplot in ggplot2 with one variable. 
+# https://www.r-bloggers.com/2016/11/make-a-box-plot-with-single-column-data-using-ggplot2-tutorial/
+
+res_weekly_confirmed_covid_latest_week_bp_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". Dots represent outliers. Some\ndots may be stacked on top of each other. ", Words(num_nas_res_weekly_covid_cases_latest_wk), " facilities did not report this metric.", collapse="") %>%  print()
+
+res_weekly_confirmed_covid_latest_week_bp <- ggplot(j7, aes(x="", y=residents_weekly_confirmed_covid_latest_week)) + geom_boxplot(notch=TRUE) + labs(title=res_weekly_confirmed_covid_latest_week_bp_title, y = "Resident cases by facility", x=" ", subtitle=res_weekly_confirmed_covid_latest_week_bp_subtitle, caption=graphic_caption)
+
+res_weekly_confirmed_covid_latest_week_bp
+
+# Now, we need to write the box plot out to a file. First step in that is assembling a file name for it
+bp_res_cases_latest_wk_file_name <- paste0("bp_res_cases_latest_wk_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Now we actually write the boxplot out to that name in the chosen location. 
+ggsave(bp_res_cases_latest_wk_file_name, res_weekly_confirmed_covid_latest_week_bp)
+
+print("This ends the chunk called analysis_latest_week_res_cases.")
+
+```
+********
+
+### Resident COVID cases in the latest data week
+
+*The data for these calculations comes from the column, or field, in the data called "residents_weekly_confirmed_covid_19."*
+
+**Maximum cases at any facility**: `r if (num_max_fac_res_cases_latest_week==1) {paste0(max_residents_weekly_covid_latest_week, ", which occurred at one facility, ", fac_max_residents_cases_latest_week, ".", sep="")} else if (num_max_fac_res_cases_latest_week>10) {paste0(max_residents_weekly_covid_latest_week, ", which occurred at ", num_max_fac_res_cases_latest_week, ". We won't list them all because there are so many.", sep="")} else {paste0(max_residents_weekly_covid_latest_week, ", which occurred at ", num_max_fac_res_cases_latest_week, " facilities, which are identified in the table below.", sep="")}` 
+
+`r if (num_max_fac_res_cases_latest_week>1 & num_max_fac_res_cases_latest_week<10) {knitr::kable(j7[which(j7$residents_weekly_confirmed_covid_latest_week==max(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE)), ] %>% pull(provider_name_and_city), col.names=c("Facility"), digits=1, caption="Maximum cases at any facility: Resident weekly COVID cases this week")}`
+
+**Minimum cases at any facility**: `r if (num_min_fac_res_cases_latest_week==1) {paste0(min_residents_weekly_covid_latest_week, ", which occurred at one facility, ", fac_min_residents_cases_latest_week, ".", sep="")} else if (num_min_fac_res_cases_latest_week>10) {paste0(min_residents_weekly_covid_latest_week, ", which occurred at ", num_min_fac_res_cases_latest_week, " facilities. We won't list them all because there are so many.", sep="")} else {paste0(min_residents_weekly_covid_latest_week, ", which occurred at ", num_min_fac_res_cases_latest_week, "  facilities, which are identified in the table below.", sep="")}` 
+
+`r if (num_min_fac_res_cases_latest_week>0 & num_min_fac_res_cases_latest_week<10) {knitr::kable(j7[which(j7$residents_weekly_confirmed_covid_latest_week==min(j7$residents_weekly_confirmed_covid_latest_week, na.rm=TRUE)), ] %>% pull(provider_name_and_city), col.names=c("Facility"), digits=1, caption="Minimum cases at any facility: Resident weekly COVID cases this week")}` 
+
+**Mean cases**: `r mean_residents_weekly_covid_latest_week`
+
+**Median cases**: `r median_residents_weekly_covid_latest_week`
+
+**Statistical outliers**: We had `r num_outliers_resident_cases_latest_week` outlier(s) this week. They are identified in the table below. (Note: The boxplot graphs in this summary, which display outliers as dots, may not show the full number of dots because some dots may be stacked on top of one another.)
+
+`r knitr::kable(outlier_facilities_resident_cases_latest_week[,c("provider_name_and_city","residents_weekly_confirmed_covid_latest_week")][order(outlier_facilities_resident_cases_latest_week$residents_weekly_confirmed_covid_latest_week,decreasing=TRUE),], col.names=c("Facility", "Resident confirmed COVID cases this data week"), digits=1, caption="Statistical outliers: Resident weekly COVID cases this week")`
+
+**Did not report this metric**: `r num_nas_res_weekly_covid_cases_latest_wk` facilit(ies): `r facs_reporting_nas_res_weekly_covid_cases_latest_wk_text_list`.
+
+
+```{r analysis_latest_week_res_cases_plots_only, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE, fig.height = 3, fig.align = "center"}
+
+hist_resident_cases_latest_week
+
+res_weekly_confirmed_covid_latest_week_bp
+
+```
+
+
+```{r analysis_raw_increase_in_res_cases, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, just leave this part commented-out. 
+# setwd(newwd_path)
+
+# So, now let's move on to looking at the raw increase (or decrease) in residential cases from the previous week to the latest week. 
+
+# Create new column for raw increase (or decrease, as needed) in resident COVID cases from last week to increase
+j7$raw_increase_in_covid_cases <- j7$residents_weekly_confirmed_covid_latest_week-j7$residents_weekly_confirmed_covid_previous_week
+
+# What is the largest increase in residential cases this week? 
+max_increase_in_res_cases <- max(j7$raw_increase_in_covid_cases, na.rm=TRUE) %>%  print()
+
+# Which facility/facilities had the largest increase? 
+fac_max_increase_residents_cases_latest_week <- j7[which(j7$raw_increase_in_covid_cases==max(j7$raw_increase_in_covid_cases, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# How many facilities had the max increase? 
+num_fac_max_increase_residents_cases_latest_week <- length(fac_max_increase_residents_cases_latest_week) %>%  print()
+
+# Find the minimum increase (or largest decrease in residential cases)
+min_increase_in_res_cases <- min(j7$raw_increase_in_covid_cases, na.rm=TRUE) %>%  print()
+
+# Which facility/facilities had the smallest increase or largest decrease?
+fac_min_increase_residents_cases_latest_week <- j7[which(j7$raw_increase_in_covid_cases==min(j7$raw_increase_in_covid_cases, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# How many facilities had our smallest increase or largest decrease? 
+num_fac_min_increase_residents_cases_latest_week <- length(fac_min_increase_residents_cases_latest_week) %>%  print()
+
+# Save the mean
+mean_increase_in_res_cases <- mean(j7$raw_increase_in_covid_cases, na.rm=TRUE) %>%  print()
+
+# Save the median
+median_increase_in_res_cases <- median(j7$raw_increase_in_covid_cases, na.rm=TRUE) %>%  print()
+
+# Standard deviation 
+std_dev_raw_increase_in_covid_cases <- sd(j7$raw_increase_in_covid_cases, na.rm=TRUE) %>%  print()
+
+# Tell me how many facilities have a NA for the raw increase in residential cases metric. 
+nas_increase_in_res_cases <- sum(is.na(j7$raw_increase_in_covid_cases)) %>%  print()
+
+# Save a text list of the names of the facilities with NA's
+nas_facilities_increase_in_res_cases_text_list <- knitr::combine_words(j7$provider_name_and_city[which(is.na(j7$raw_increase_in_covid_cases))]) %>%  print()
+
+# Show the outliers for weekly residential cases on the screen so I can eyeball them
+boxplot.stats(j7$raw_increase_in_covid_cases)$out
+
+# Print to screen the outlier values, in order, from smallest to largest, so I can eyeball them. 
+sort(boxplot.stats(j7$raw_increase_in_covid_cases)$out, decreasing=FALSE)
+
+# Count number of outliers in raw increase in resident covid cases in the latest week. 
+num_outliers_raw_increase_in_covid_cases <- length(boxplot.stats(j7$raw_increase_in_covid_cases)$out) %>%  print()
+
+# Save the outliers as a variable. This takes 3 steps: 
+out_res_case_raw_increase <- boxplot.stats(j7$raw_increase_in_covid_cases)$out %>% print()
+
+out_res_case_raw_increase_ind <- which(j7$raw_increase_in_covid_cases %in% c(out_res_case_raw_increase))
+
+out_res_case_raw_increase_ind %>% print()
+
+# Save the names of the outlier facilities (name and city) as a tibble 
+outlier_facilities_raw_increase_resident_cases_latest_week <- j7[out_res_case_raw_increase_ind, ] %>% print()
+
+outlier_facilities_raw_increase_resident_cases_latest_week <- outlier_facilities_raw_increase_resident_cases_latest_week[,c("provider_name_and_city","residents_weekly_confirmed_covid_latest_week","residents_weekly_confirmed_covid_previous_week","raw_increase_in_covid_cases")] %>%  print()
+
+# Now to work on the rank of raw increase. 
+
+# Create a column ranking the raw increase. Run the rank in reverse order (the minus sign). Ties will be assigned the lowest possible rank. 
+j7$rank_in_raw_increase <- rank(-j7$raw_increase_in_covid_cases, na.last = TRUE, ties.method = c("min")) %>%  print()
+
+num_nas_raw_increas_in_covid_cases <- sum(is.na(j7$raw_increase_in_covid_cases)) %>%  print()
+
+# OK, now, let's make a histogram for residential cases in the latest week. 
+
+# First, let's create a title for our histogram
+res_raw_increase_hist_title <- paste0("Histogram: Raw increase in confirmed COVID cases by facility", collapse="") %>%  print()
+
+res_raw_increase_hist_subtitle <- paste0("For the week ending ", data_week_nicely_formatted, ". ", Words(nas_increase_in_res_cases), " facilities did not report this metric.", collapse="") %>%  print()
+
+hist_raw_increase_resident_cases_latest_week <-ggplot(j7, aes(x=raw_increase_in_covid_cases)) + geom_histogram(color="black", fill="blue", binwidth=1) + labs(title=res_raw_increase_hist_title,x="Raw increase or decrease in resident cases by facility", y = "# of facilities", subtitle=res_raw_increase_hist_subtitle, caption=graphic_caption)
+
+# Show the histogram on the screen.
+hist_raw_increase_resident_cases_latest_week
+
+# Now, we need to write the histogram out to a file. First step in that is assembling a file name for it
+
+hist_raw_increase_resident_cases_latest_week_file_name <- paste0("hist_raw_increase_resident_cases_latest_week_", data_week_nicely_formatted, ".jpg", collapse="") %>%  print()
+
+# Now we actually write the boxplot out to that name in the chosen location. 
+ggsave(hist_raw_increase_resident_cases_latest_week_file_name, hist_raw_increase_resident_cases_latest_week)
+
+print("This ends the chunk called analysis_raw_increase_in_res_cases.")
+
+```
+
+********
+
+### Change (increase/decrease) in COVID cases in the latest 2 data weeks
+
+*The data for these calculations comes from the column, or field, in the data called "residents_weekly_confirmed_covid_19." The script pulls down the last two weeks' worth of data to compare the previous data week's numbers to the latest data week's numbers.*
+
+**Largest increase in cases at any facility**: `r max_increase_in_res_cases`, which occurred at `r num_fac_max_increase_residents_cases_latest_week` facilit(ies): `r fac_max_increase_residents_cases_latest_week`.
+
+**Largest decrease in cases at any facility**: `r min_increase_in_res_cases`, which occurred at `r num_fac_min_increase_residents_cases_latest_week` facilit(ies): `r fac_min_increase_residents_cases_latest_week `
+
+**Mean change in cases**: `r mean_increase_in_res_cases`
+
+**Median change in cases**: `r median_increase_in_res_cases`
+
+**Statistical outliers**: We had `r num_outliers_raw_increase_in_covid_cases` outlier(s) this week. They are listed in the table below.
+
+`r knitr::kable(outlier_facilities_raw_increase_resident_cases_latest_week[,c(1,4)][order(outlier_facilities_raw_increase_resident_cases_latest_week$raw_increase_in_covid_cases, outlier_facilities_raw_increase_resident_cases_latest_week$provider_name_and_city, decreasing=TRUE),], col.names=c("Facility", "Raw increase or decrease in resident COVID cases"), digits=1, caption="Statistical outliers: Change in COVID cases in latest 2 data weeks")`
+
+**Did not report this metric**: `r nas_increase_in_res_cases` facilities: `r nas_facilities_increase_in_res_cases_text_list`.
+
+```{r change_in_covid_cases_residents_latest_2_wks_plots_only, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE, fig.height = 3, fig.align = "center"}
+
+hist_raw_increase_resident_cases_latest_week
+
+
+```
+
+```{r analysis_total_res_cases_past_2_wks, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, just leave this part commented-out. 
+# setwd(newwd_path)
+
+# Create new column of total residential cases for the past 2 weeks. 
+j7$total_cases_past_two_weeks <- j7$residents_weekly_confirmed_covid_latest_week+j7$residents_weekly_confirmed_covid_previous_week %>%  print()
+
+# Find the max
+max_res_cases_past_2_wks <- max(j7$total_cases_past_two_weeks, na.rm=TRUE) %>%  print()
+
+# Which facility/facilities had the maximum total residential cases in the past 2 weeks? 
+fac_max_residents_cases_past_2_wks <- j7[which(j7$total_cases_past_two_weeks==max(j7$total_cases_past_two_weeks, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+num_fac_max_residents_cases_past_2_wks <- length(fac_max_residents_cases_past_2_wks) %>%  print()
+
+# Find the min
+min_res_cases_past_2_wks <- min(j7$total_cases_past_two_weeks, na.rm=TRUE) %>%  print()
+
+# Which facility/facilities had the minimum total residential cases in the past 2 weeks? (This value is probably 0)
+fac_min_residents_cases_past_2_wks <- j7[which(j7$total_cases_past_two_weeks==min(j7$total_cases_past_two_weeks, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# How many facilities have the minimum total residential cases in the past 2 weeks? (This is probably a large number)
+num_fac_min_residents_cases_past_2_wks <- length(fac_min_residents_cases_past_2_wks) %>%  print()
+
+# Pct facilities with minimum.
+pct_fac_min_residents_cases_past_2_wks <- ((num_fac_min_residents_cases_past_2_wks/(length(j7$total_cases_past_two_weeks)))*100) %>%  print()
+
+# Find the mean
+mean_res_cases_past_2_wks <- mean(j7$total_cases_past_two_weeks, na.rm=TRUE) %>%  print()
+
+# Find the median
+median_res_cases_past_2_wks <- median(j7$total_cases_past_two_weeks, na.rm=TRUE) %>%  print()
+
+# Standard deviation 
+std_dev_res_cases_past_2_wks <- sd(j7$total_cases_past_two_weeks, na.rm=TRUE) %>%  print()
+
+# How many facilities in our data reported 0 residential COVID cases in the past two weeks? 
+num_fac_0_total_res_cases_past_2_wks <- nrow(j7 %>%  filter(total_cases_past_two_weeks==0)) %>%  print()
+
+# What percentage of the facilities in our data reported 0 residential COVID cases in the past 2 weeks? 
+pct_fac_reported_no_res_COVID_past_2_wks <- (((nrow(j7 %>%  filter(total_cases_past_two_weeks==0)))/nrow(j7))*100) %>%  print()
+
+# How many outliers do we have for total new residential cases in the past 2 weeks? 
+num_outliers_total_cases_past_2_wks <- length(boxplot.stats(j7$total_cases_past_two_weeks)$out) %>%  print()
+
+# Save the outliers as a variable. This takes 3 steps: 
+out_total_res_cases_2_wks <- boxplot.stats(j7$total_cases_past_two_weeks)$out
+
+out_total_res_cases_2_wks_ind <- which(j7$total_cases_past_two_weeks %in% c(out_total_res_cases_2_wks))
+
+out_total_res_cases_2_wks_ind
+
+# Save the names of the outlier facilities (name and city) as a tibble 
+outlier_facilities_total_resident_cases_2_wks <- j7[out_total_res_cases_2_wks_ind, ] %>%  print()
+
+outlier_facilities_total_resident_cases_2_wks <- outlier_facilities_total_resident_cases_2_wks[,c("provider_name_and_city","total_cases_past_two_weeks")] %>%  print()
+
+# Create a rank column for the total residential cases in the past 2 weeks. Run the rank in reverse order (the minus sign). Ties will be assigned the smallest possible rank. 
+j7$rank_in_cases_past_two_weeks <- rank(-j7$total_cases_past_two_weeks, na.last = TRUE, ties.method = c("min")) %>%  print()
+
+# Save the number of NA's 
+num_nas_total_res_cases_past_2_wks <- sum(is.na(j7$total_cases_past_two_weeks)) %>%  print()
+
+# Save the list of facility names with NA's
+nas_total_res_cases_past_2_wks_text_list <- 
+knitr::combine_words(j7$provider_name_and_city[which(is.na(j7$total_cases_past_two_weeks))]) %>%  print()
+
+# Next, we need to create a histogram. We start by creating the title for the histogram
+hist_total_res_cases_past_2_wks_title <- paste0("Histogram: Residents total COVID cases in past 2 weeks", collapse="") %>%   print()
+
+hist_total_res_cases_past_2_wks_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". ", Words(num_nas_total_res_cases_past_2_wks), " facilities did not have\ndata for this metric.", collapse="") %>%  print()
+
+# Create histogram on residential cases in past 2 weeks
+hist_total_res_cases_past_2_wks <-ggplot(j7, aes(x=total_cases_past_two_weeks)) +  geom_histogram(color="black", fill="blue", binwidth=1) + labs(title=hist_total_res_cases_past_2_wks_title ,x="Residential cases by facility", y = "# of facilities", subtitle=hist_total_res_cases_past_2_wks_subtitle, caption=graphic_caption)
+
+hist_total_res_cases_past_2_wks
+
+# Now, we need to write the histogram out to a file. First step in that is assembling a file name for it
+hist_total_res_cases_past_2_wks_file_name <- paste0("hist_total_res_cases_past_2_wks_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Now we actually write the histogram out to that name in the chosen location. 
+ggsave(hist_total_res_cases_past_2_wks_file_name, hist_total_res_cases_past_2_wks)
+
+print("This completes the chunk called analysis_total_res_cases_past_2_wks.")
+
+```
+
+
+********
+
+### Total COVID cases in the latest 2 data weeks
+
+*The data for these calculations comes from the column, or field, in the data called "residents_weekly_confirmed_covid_19." The script pulls down the last two weeks' worth of data and combines the previous data week's numbers with the latest data week's numbers.*
+
+**Max cases at any facility**: `r max_res_cases_past_2_wks`, which occurred at `r num_fac_max_residents_cases_past_2_wks` facilit(ies): `r fac_max_residents_cases_past_2_wks`.
+
+**Minimum number of total cases at any facility in the past 2 weeks**: `r min_res_cases_past_2_wks`, which occurred at `r num_fac_min_residents_cases_past_2_wks` facilit(ies), which represent `r pct_fac_min_residents_cases_past_2_wks`% of facilities in the data.
+
+**Mean cases**: `r mean_res_cases_past_2_wks`
+
+**Median cases**: `r median_res_cases_past_2_wks`
+
+**Statistical outliers**: We had `r num_outliers_total_cases_past_2_wks` outlier(s) this week. They are listed in the table below.
+
+`r knitr::kable(outlier_facilities_total_resident_cases_2_wks[order(outlier_facilities_total_resident_cases_2_wks$total_cases_past_two_weeks, outlier_facilities_total_resident_cases_2_wks$provider_name_and_city, decreasing=TRUE),], col.names=c("Facility", "Total resident COVID cases in past 2 data weeks"), digits=1, caption="Statistical outliers: Total resident COVID cases in latest 2 data weeks")`
+
+**Did not report this metric**: `r num_nas_total_res_cases_past_2_wks` facilities: `r nas_total_res_cases_past_2_wks_text_list`.
+
+
+
+```{r weekly_covid_increase_plots_only,  echo=FALSE, warning=FALSE, message=FALSE, include=TRUE, fig.height = 3, fig.align = "center"}
+#
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+hist_total_res_cases_past_2_wks
+
+```
+
+```{r write_weekly_covid_increase_to_file, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+# Now we want to write this sucker out to a file.
+
+# OK, so we need to write this out. So, what do you want to call the file? Put in a name here inside the quote marks on line 141. 
+name_of_my_file <- "cms_nursing_home_covid_week_case_data"
+
+# Step 1 of assembling our full file name and path
+name_of_my_file_list <- c(name_of_my_file, "_calculated_", todays_date_in_sql_format, ".csv")
+
+# Step 2 of assembling our full file name and path
+name_of_my_file_full <- paste0(name_of_my_file_list, collapse = "") %>%  print()
+
+# Now write the file to our working directory
+write.csv(j7, name_of_my_file_full, row.names=FALSE)
+
+print("This completes the chunk called write_weekly_covid_increase_to_file.")
+
+```
+
+
+```{r vax_rates_for_residents, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+# Let's go back to Table j6
+
+# Subset to narrow down to just some columns we want and also filter to the latest week of data only
+vaxa <- j6[,c("week_ending", "federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code", "which_week", "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time")] %>%  filter(str_detect(which_week, "latest week"))
+
+# This is an artifact from a previous version of this script
+vaxb <- vaxa 
+
+# rename this column because it's insanely long
+names(vaxb)[names(vaxb)=='percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time'] <- 'pct_residents_vaxxed_latest_week' %>%  print()
+
+# Create new column with combined name and city of facility. First, we need to take the provider_name and provider_city fields and run them thru a function of the snakecase package to get them out of all-caps. This will take 2 lines. Then we actually do the concatenation and then we clean up the annoying spaces. 
+
+vaxb$provider_name <- to_mixed_case(vaxb$provider_name, sep_out = " ") %>%  print()
+
+vaxb$provider_city <- to_mixed_case(vaxb$provider_city, sep_out = " ") %>%  print()
+
+vaxb$provider_name_and_city <- paste(trimws(vaxb$provider_name), " (", vaxb$provider_city, ")") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, "  \\( ", " \\(") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " \\)", "\\)") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " And ", " and ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " The ", " the ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " Of ", " of ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " Ltc ", " LTC ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " Llc ", " LLC ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " At ", " at ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " Nsg ", " Nursing ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " Ctr ", " Center ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " For ", " for ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, "Lillian G ", "Lillian G. ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, "A G ", "A.G. ") %>%  print()
+
+vaxb$provider_name_and_city <- str_replace(vaxb$provider_name_and_city, " Inc ", " Inc. ") %>%  print()
+
+# Find the max percentage of residents vaxxed in the latest week. 
+max_pct_residents_vaxxed_latest_wk <- max(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Find the names of the facilities where they had the max percentage of residents vaxxed in the latest data week. 
+fac_with_max_pct_residents_vaxxed_latest_wk <- vaxb[which(vaxb$pct_residents_vaxxed_latest_week==max(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# Find the number of facilities that had the maximum percentage of residents vaxxed in the latest week
+num_fac_with_max_pct_residents_vaxxed_latest_wk <- length(fac_with_max_pct_residents_vaxxed_latest_wk) %>%  print()
+
+# Find the min percentage of residents vaxxed latest week. 
+min_pct_residents_vaxxed_latest_wk <- min(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Find the names of the facilities where they had the min  percentage of residents vaxxed in the latest data week. 
+fac_with_min_pct_residents_vaxxed_latest_wk <- vaxb[which(vaxb$pct_residents_vaxxed_latest_week==min(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city)
+
+# Find the number of facilities that had the minimum percentage of residents vaxxed in the latest week
+num_fac_with_min_pct_residents_vaxxed_latest_wk <- length(fac_with_min_pct_residents_vaxxed_latest_wk) %>%  print()
+
+# Find the mean percentage of residents vaxxed in the latest week. 
+mean_pct_residents_vaxxed_latest_wk <- mean(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Find the median percentage of residents vaxxed in the latest week. 
+median_pct_residents_vaxxed_latest_wk <- median(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Standard deviation 
+std_dev_pct_residents_vaxxed_latest_wk <- sd(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# How many NA's are there in the percentage of residents vaxxed in the latest week of data? 
+num_nas_pct_residents_vaxxed_latest_wk <- sum(is.na(vaxb$pct_residents_vaxxed_latest_week)) %>%  print()
+
+# Percentage of the facilities in the data reported NA for their residential vax percentage this week? 
+ pct_fac_na_for_residents_vaxxed_latest_wk <- ((num_nas_pct_residents_vaxxed_latest_wk/length(vaxb$pct_residents_vaxxed_latest_week))*100) %>%  print()
+
+# Calculate the rank column
+vaxb$rank_in_pct_residents_vaxxed_latest_wk <- rank(-vaxb$pct_residents_vaxxed_latest_week, na.last = TRUE, ties.method = c("min")) %>%  print()
+
+# Now, to outliers
+
+# Show me the outliers for the percent residents vaxxed last week, order them from smallest to largest
+sort(boxplot.stats(vaxb$pct_residents_vaxxed_latest_week)$out, decreasing=FALSE)
+
+# How many outliers are there in the percentage of residents vaxxed in the latest week of data? 
+num_outliers_pct_residents_vaxxed_latest_wk <- length(boxplot.stats(vaxb$pct_residents_vaxxed_latest_week)$out) %>%  print()
+
+# Save the outliers as a variable. This takes 3 steps: 
+out_res_vax <- boxplot.stats(vaxb$pct_residents_vaxxed_latest_week)$out %>%  print()
+
+out_res_vax_ind <- which(vaxb$pct_residents_vaxxed_latest_week %in% c(out_res_vax)) %>%  print()
+
+out_res_vax_ind
+
+# Save the names of the outlier facilities (name and city) as ... something. 
+vaxc <- vaxb[out_res_vax_ind, ] %>%  print()
+
+fac_outliers_pct_residents_vaxxed_latest_wk <- vaxc$provider_name_and_city %>%  print()
+
+# Now, calculate the IQR and the break point at which everthing below it is an outlier. 
+
+# More at https://www.r-bloggers.com/2020/01/how-to-remove-outliers-in-r/
+q <- quantile(vaxb$pct_residents_vaxxed_latest_week, probs=c(.25, .75), na.rm = TRUE) %>% print()
+
+iqr <- IQR(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE) %>% print()
+
+up <-  (q[2]+1.5*iqr) %>% print() # upper range. Everrything above this point would be an outlier  
+low <- (q[1]-1.5*iqr) %>% print() # lower range. Everything below this point would also be an outlier
+
+# Next, we need to create a histogram. We start by creating the title for the histogram
+hist_res_vaxxed_latest_week <- paste0("Histogram: % of GA nursing home residents vaxxed", collapse="") %>%   print()
+
+hist_res_vaxxed_latest_week_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". ", Words(num_nas_pct_residents_vaxxed_latest_wk), " of ", nrow(vaxb), " facilities did not\nreport this metric.", collapse="") %>%  print()
+
+# Histogram of nursing home residents vaxxed latest week. 
+hist_residents_vaxxed_latest_week <-ggplot(vaxb, aes(x=pct_residents_vaxxed_latest_week)) + geom_histogram(color="black", fill="blue", binwidth=1) + labs(title=hist_res_vaxxed_latest_week,x="% of residents by facility", y = "# of facilities", subtitle=hist_res_vaxxed_latest_week_subtitle, caption=graphic_caption)
+
+hist_residents_vaxxed_latest_week
+
+# Now, we need to write the histogram out to a file. First step in that is assembling a file name for it
+hist_residents_vaxxed_latest_wk_file_name <- paste0("hist_residents_vaxxed_latest_week_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Now we actually write the histogram out to that name in the chosen location. 
+ggsave(hist_residents_vaxxed_latest_wk_file_name, hist_residents_vaxxed_latest_week)
+
+# Next, we need to create a histogram. We start by creating the title for the histogram
+bp_res_vaxxed_latest_week <- paste0("Boxplot: % of GA nursing home residents vaxxed", collapse="") %>%   print()
+
+bp_res_vaxxed_latest_week_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". Dots represent outliers.\nSome dots may be stacked on top of each other. ", Words(num_nas_pct_residents_vaxxed_latest_wk), " of ", nrow(vaxb), " facilities did\nnot report this metric.", collapse="") %>%  print()
+
+# Box plot for pct of residents vaxxed latest week. Vertical. 
+bp_res_vaxxed_latest_wk <- ggplot(vaxb) + aes(x = "", y = pct_residents_vaxxed_latest_week) + geom_boxplot(fill = "#0c4c8a") + ggtitle(bp_res_vaxxed_latest_week) + labs(x=" ", y = "% of residents vaccinated", subtitle=bp_res_vaxxed_latest_week_subtitle, caption=graphic_caption) # coord_flip() +  theme_gray()
+
+bp_res_vaxxed_latest_wk
+  
+# Now, we need to write the boxplot out to a file. First step in that is assembling a file name for it
+bp_residents_vaxxed_latest_wk_file_name <- paste0("bp_residents_vaxxed_latest_week_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Now we actually write the histogram out to that name in the chosen location. 
+ggsave(bp_residents_vaxxed_latest_wk_file_name, bp_res_vaxxed_latest_wk)
+
+# Subset to cut off the combined provider name and city column; this is the version we will output (in the next chunk) to a CSV for our COVID coverage team. 
+vaxd <- vaxb %>% select(-provider_name_and_city) %>% print()
+
+print("This completes the chunk called vax_rates_for_residents.")
+
+```
+********
+
+### Residential vaccination rates by facility in latest data week
+
+*The data for these calculations comes from the column, or field, in the data called "percentage_of_current_residents_who_received_a_completed_covid_19_vaccination_at_any_time."*
+
+**Max residential vax rate**: `r if (num_fac_with_max_pct_residents_vaxxed_latest_wk==1) {paste0(max_pct_residents_vaxxed_latest_wk, "%, which occurred at one facility, ", fac_with_max_pct_residents_vaxxed_latest_wk, ".", sep="")} else if (num_fac_with_max_pct_residents_vaxxed_latest_wk>10) {paste0(max_pct_residents_vaxxed_latest_wk, "%, which occurred at ", num_fac_with_max_pct_residents_vaxxed_latest_wk, " facilities. We won't list them all here.", sep="")} else {paste0(max_pct_residents_vaxxed_latest_wk, "%, which occurred at ", num_fac_with_max_pct_residents_vaxxed_latest_wk, " facilities. They are listed in the table below.", sep="")}`
+
+`r if (num_fac_with_max_pct_residents_vaxxed_latest_wk>1 & num_fac_with_max_pct_residents_vaxxed_latest_wk<10) {knitr::kable(vaxb[which(vaxb$pct_residents_vaxxed_latest_week==max(vaxb$pct_residents_vaxxed_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city), col.names=c("Facility"), digits=1, caption="Facilities with the maximum residential vaccination rate this week")}`
+
+**Minimum residential vax rate**: `r min_pct_residents_vaxxed_latest_wk`%, which was reported by `r num_fac_with_min_pct_residents_vaxxed_latest_wk` facilit(ies): `r knitr::combine_words(fac_with_min_pct_residents_vaxxed_latest_wk)`. Keep in mind, there's a very good chance that any facility with an unreasonably low vaccination rate could be a typo.
+
+**Mean residential vax rate**: `r mean_pct_residents_vaxxed_latest_wk`%
+
+**Median residential vax rate**: `r median_pct_residents_vaxxed_latest_wk`%
+
+**Statistical outliers**: We had `r num_outliers_pct_residents_vaxxed_latest_wk` outlier(s) this week: `r knitr::combine_words(fac_outliers_pct_residents_vaxxed_latest_wk)`. Any facility with a vaccination rate below `r low`% was, or would have been, an outlier. 
+
+**Did not report this metric**: `r if (num_nas_pct_residents_vaxxed_latest_wk==0) {"All the facilities in the dataset reported this metric this week."} else if (num_nas_pct_residents_vaxxed_latest_wk<10) {paste0(num_nas_pct_residents_vaxxed_latest_wk, " facilit(ies), which represent ", round(pct_fac_na_for_residents_vaxxed_latest_wk, 1), "% of facilities in our data this week.", sep="")} else {paste0(num_nas_pct_residents_vaxxed_latest_wk, " facilit(ies), which represent ", round(pct_fac_na_for_residents_vaxxed_latest_wk,1), "% of facilities in our data this week. We won't list them all here because there are too many.")}` 
+
+
+
+```{r resident_vax_data_plots_only, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE, fig.height = 3, fig.align = "center"}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+hist_residents_vaxxed_latest_week
+
+bp_res_vaxxed_latest_wk
+
+```
+```{r write_resident_vax_data_to_file, eval=TRUE, echo=FALSE, include=FALSE}
+
+# OK, so we need to write this out. So, what do you want to call the file? Put in a name here inside the quote marks on line 141. 
+name_of_my_file <-  "cms_nursing_home_resident_vax_rates_data"
+
+# Step 1 of assembling our full file name and path
+name_of_my_file_list <- c(name_of_my_file, "_calculated_", todays_date_in_sql_format, ".csv")
+
+# Step 2 of assembling our full file name and path
+name_of_my_file_full <- paste0(name_of_my_file_list, collapse = "") %>%  print()
+
+# Now we write our file out to that folder with the specified file name ...  
+write.csv(vaxd, name_of_my_file_full, row.names=FALSE)
+
+print("This completes the chunk called write_resident_vax_data_to_file.")
+
+
+```
+
+
+```{r staff_vax_data, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+vaxf <- j6[,c("federal_provider_number", "provider_name", "provider_address", "provider_city", "provider_state", "provider_zip_code", "county", "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time", "which_week")] %>% filter(str_detect(which_week, "latest week"))
+
+# Make sure this field is numeric
+vaxf$percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time <- as.numeric(vaxf$percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time)
+
+# Rename this column because it's insanely long
+names(vaxf)[names(vaxf)=='percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time'] <- 'pct_staff_vaxxed_latest_week' %>%  print()
+
+# Create new column for combined provider name and city (next 3 lines)
+vaxf$provider_name <- to_mixed_case(vaxf$provider_name, sep_out = " ") %>%  print()
+
+vaxf$provider_city <- to_mixed_case(vaxf$provider_city, sep_out = " ") %>%  print()
+
+vaxf$provider_name_and_city <- paste(trimws(vaxf$provider_name), " (", vaxf$provider_city, ")") %>% print() 
+
+vaxf$provider_name_and_city <- str_replace(vaxf$provider_name_and_city, "  \\( ", " \\(") %>%  print()
+
+vaxf$provider_name_and_city <- str_replace(vaxf$provider_name_and_city, " \\)", "\\)") %>%  print()
+
+# Find the max value
+max_pct_staff_vaxxed_latest_week <- max(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Find the names of the facilities where they had the max percentage of staff vaxxed in the latest data week. 
+fac_with_max_pct_staff_vaxxed_latest_week <- vaxf[which(vaxf$pct_staff_vaxxed_latest_week==max(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# How many facilities have the max? 
+num_fac_with_max_pct_staff_vaxxed_latest_wk <- length(fac_with_max_pct_staff_vaxxed_latest_week) %>%  print()
+
+# Find the minimum number
+min_pct_staff_vaxxed_latest_week <- min(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Find the names of the facilities where they had the minimum percentage of staff vaxxed in the latest data week. 
+fac_with_min_pct_staff_vaxxed_latest_week <- vaxf[which(vaxf$pct_staff_vaxxed_latest_week==min(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE)), ] %>%  pull(provider_name_and_city) %>%  print()
+
+# Save text list of names of the facilities with the minimum percentage of staff vaxxed. 
+fac_with_min_pct_staff_vaxxed_latest_week_text_list <- knitr::combine_words(fac_with_min_pct_staff_vaxxed_latest_week) %>%  print()
+
+# How many facilities have the minimum? 
+num_fac_with_min_pct_staff_vaxxed_latest_week <- length(fac_with_min_pct_staff_vaxxed_latest_week) %>%  print()
+
+# Find the mean
+mean_pct_staff_vaxxed_latest_wk <- mean(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Find the median value
+median_pct_staff_vaxxed_latest_wk <- median(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# Create rank column
+vaxf$rank_in_pct_healthcare_pers_vaxxed_latest_wk <- rank(-vaxf$pct_staff_vaxxed_latest_week, na.last = TRUE, ties.method = c("min")) 
+
+# Now, to outliers
+
+# Show me the outliers for the percent residents vaxxed last week, order them from smallest to largest
+sort(boxplot.stats(vaxf$pct_staff_vaxxed_latest_week)$out, decreasing=FALSE)
+
+# Standard deviation 
+std_dev_pct_staff_vaxxed_latest_wk <- sd(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE) %>%  print()
+
+# How many outliers are there in the percentage of residents vaxxed in the latest week of data? 
+num_outliers_pct_staff_vaxxed_latest_wk <- length(boxplot.stats(vaxf$pct_staff_vaxxed_latest_week)$out) %>%  print()
+
+# Create a list for me of the facilities that have the outlier values in our staff vax metric. This takes about 5 steps. 
+out_staff_vax <- boxplot.stats(vaxf$pct_staff_vaxxed_latest_week)$out %>%  print()
+
+out_staff_vax_ind <- which(vaxf$pct_staff_vaxxed_latest_week %in% c(out_staff_vax))
+
+out_staff_vax_ind
+
+vaxg <- vaxf[out_staff_vax_ind, ]
+
+out_fac_pct_staff_vaxxed_latest_wk <- vaxg$provider_name_and_city %>%  print()
+
+# Now, calculate the IQR and the break point at which everthing below it is an outlier. 
+
+# More at https://www.r-bloggers.com/2020/01/how-to-remove-outliers-in-r/
+q <- quantile(vaxf$pct_staff_vaxxed_latest_week, probs=c(.25, .75), na.rm = TRUE) %>% print()
+
+iqr <- IQR(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE) %>% print()
+
+up <-  (q[2]+1.5*iqr) %>% print() # upper range. Everything above this would be an outlier  
+low <- (q[1]-1.5*iqr) %>% print() # lower range. Everything below this would also be an outlier. 
+
+# Count NA's
+nas_pct_staff_vaxxed_latest_wk <- sum(is.na(vaxf$pct_staff_vaxxed_latest_week)) %>%  print()
+
+#vaxf[which(vaxf$pct_staff_vaxxed_latest_week==min(vaxf$pct_staff_vaxxed_latest_week, na.rm=TRUE)), ]
+
+# The NA's represent this percentage of facilities in the data
+pct_fac_reporting_nas_for_pct_staff_vaxxed_latest_wk <- ((nas_pct_staff_vaxxed_latest_wk/nrow(vaxf))*100) %>%  print()
+
+# Next, we need to create a histogram. We start by creating the title for the histogram
+hist_pct_staff_vaxxed_latest_week <- paste0("Histogram: % of health care personnel vaxxed at nursing homes", collapse="") %>%   print()
+
+hist_pct_staff_vaxxed_latest_week_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". ", Words(nas_pct_staff_vaxxed_latest_wk), " of ", nrow(vaxf), " facilities did not report\nthis metric.", collapse="") %>%  print()
+
+# Create histogram of staff vax rates
+hist_pct_staff_vaxxed <-ggplot(vaxf, aes(x=pct_staff_vaxxed_latest_week)) + geom_histogram(color="black", fill="blue", binwidth=1) + labs(title=hist_pct_staff_vaxxed_latest_week,x="% vaxxed by facility", y = "# of facilities", subtitle=hist_pct_staff_vaxxed_latest_week_subtitle, caption=graphic_caption)
+
+# Show our histogram on screen
+hist_pct_staff_vaxxed 
+
+# Write the histogram out to a file. First step in that is assembling a file name for it
+hist_pct_staff_vaxxed_latest_week_file_name <- paste0("hist_staff_vaxxed_latest_week_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Actually write the histogram out to that name in the chosen location. 
+ggsave(hist_pct_staff_vaxxed_latest_week_file_name, hist_pct_staff_vaxxed)
+
+# Create a box plot. We start by creating the title for the box plot
+bp_pct_staff_vaxxed_latest_week <- paste0("Box plot: % of health care personnel vaxxed at nursing homes", collapse="") %>%   print()
+
+bp_pct_staff_vaxxed_latest_week_subtitle <- paste0("For ", my_state_name, " nursing homes for the week ending ", data_week_nicely_formatted, ". Dots represent outliers.\nSome dots may be stacked on top of each other. ", Words(nas_pct_staff_vaxxed_latest_wk), " of ", nrow(vaxf),  " facilities did not report this metric.", collapse="") %>%  print()
+
+boxplot_staff_vaxxed_latest_wk <- ggplot(vaxf) + aes(x = "", y = pct_staff_vaxxed_latest_week) +  geom_boxplot(fill = "#0c4c8a") + ggtitle(bp_pct_staff_vaxxed_latest_week) + labs(x=" ", y="% of health care personnel vaxxed", caption=graphic_caption, subtitle=bp_pct_staff_vaxxed_latest_week_subtitle) + theme_gray()
+
+boxplot_staff_vaxxed_latest_wk
+
+# Write the boxplot out to a file. First step in that is assembling a file name for it
+bp_pct_staff_vaxxed_latest_week_file_name <- paste0("bp_staff_vaxxed_latest_week_", latest_week, ".jpg", collapse="") %>%  print()
+
+# Actually write the boxplot out to that name in the chosen location. 
+ggsave(bp_pct_staff_vaxxed_latest_week_file_name, boxplot_staff_vaxxed_latest_wk)
+
+print("This completes the chunk called staff_vax_data.")
+
+```
+********
+
+### Health care staff vaccination rates by facility in latest data week
+
+*The data for these calculations comes from the column, or field, in the data called "percentage_of_current_healthcare_personnel_who_received_a_completed_covid_19_vaccination_at_any_time."*
+
+**Max vax rate**: `r if (num_fac_with_max_pct_staff_vaxxed_latest_wk==1) {paste0(max_pct_staff_vaxxed_latest_week, "%, which occurred at one facility, ", fac_with_max_pct_staff_vaxxed_latest_week, sep="")} else if (num_fac_with_max_pct_staff_vaxxed_latest_wk>10) {paste0(max_pct_staff_vaxxed_latest_week, "%, which occurred at ", num_fac_with_max_pct_staff_vaxxed_latest_wk, " facilities. We won't list them all here.", sep="")} else {paste0(max_pct_staff_vaxxed_latest_week, "%, which occurred at", num_fac_with_max_pct_staff_vaxxed_latest_wk, " facilities, which we will list in the table below.", sep="")}`
+
+`r if (num_fac_with_max_pct_staff_vaxxed_latest_wk>1 & num_fac_with_max_pct_staff_vaxxed_latest_wk<10) {kable(fac_with_max_pct_staff_vaxxed_latest_week, col.names=c("Facility"), digits=1, caption="Facilities with the maximum health care staff vaccination rate")}`
+
+**Minimum vax rate**: `r if (length(fac_with_min_pct_staff_vaxxed_latest_week)==1) {paste0(min_pct_staff_vaxxed_latest_week, "%, which occurred at one facility, ", fac_with_min_pct_staff_vaxxed_latest_week, sep="")} else if (length(fac_with_min_pct_staff_vaxxed_latest_week)>10) {paste0(min_pct_staff_vaxxed_latest_week, "%, which occurred at ", num_fac_with_min_pct_staff_vaxxed_latest_wk, " facilities. We won't list them all here.", sep="")} else {paste0(min_pct_staff_vaxxed_latest_week, "%, which occurred at", num_fac_with_min_pct_staff_vaxxed_latest_wk, " facilities, which we will list in the table below. Keep in mind, there is a very good chance that any facility reporting a very low vaccination rate is actually a typo.", sep="")}`
+
+`r if (length(fac_with_min_pct_staff_vaxxed_latest_week)>1 & length(fac_with_min_pct_staff_vaxxed_latest_week)<10) {kable(fac_with_min_pct_staff_vaxxed_latest_week, col.names=c("Facility"), digits=1, caption="Facilities with the minimum health care staff vaccination rate")}` 
+
+**Mean vax rate**: `r mean_pct_staff_vaxxed_latest_wk`%
+
+**Median vax rate**: `r median_pct_staff_vaxxed_latest_wk`%
+
+**Statistical outliers**: We had `r num_outliers_pct_staff_vaxxed_latest_wk` outlier(s) this week. Any facility with a vax rate less than `r low`% would be, or would have been, an outlier. 
+
+**Did not report this metric**: `r if (nas_pct_staff_vaxxed_latest_wk<10) {paste0(nas_pct_staff_vaxxed_latest_wk, " facilit(ies), which represent ", round(pct_fac_reporting_nas_for_pct_staff_vaxxed_latest_wk,2), "% of facilities in our data. They are listed in the table below.", sep="")} else {paste0(nas_pct_staff_vaxxed_latest_wk, " facilit(ies), which represent ", round(pct_fac_reporting_nas_for_pct_staff_vaxxed_latest_wk,2), "% of facilities in our data. We won't list them all this week because there are so many.", sep="")}`
+
+
+```{r staff_vax_data_plots_only, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE, fig.height = 3, fig.align = "center"}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+hist_pct_staff_vaxxed 
+
+boxplot_staff_vaxxed_latest_wk
+
+```
+
+
+```{r write_personnel_vax_data_to_file, eval=TRUE, echo=FALSE, include=FALSE}
+
+# Reset the new working directory, if you are so inclined. Otherwise, leave this next line commented-out.
+# setwd(newwd_path)
+
+# OK, so we need to write this out. So, what do you want to call the file? Put in a name here inside the quote marks on line 141. 
+name_of_my_file <-  "cms_nursing_home_personnel_vax_rates_data"
+
+# Step 1 of assembling our full file name and path
+name_of_my_file_list <- c(name_of_my_file, "_calculated_", todays_date_in_sql_format, ".csv")
+
+# Step 2 of assembling our full file name and path
+name_of_my_file_full <- paste0(name_of_my_file_list, collapse = "")
+
+# Print out the full file name to the screen so we can eyeball it. This will just be the file name only. We'll do the file path in a jiffy. 
+print(name_of_my_file_full)
+
+# Write our file out to that folder with the specified file name ...  
+write.csv(vaxf, name_of_my_file_full, row.names=FALSE)
+
+print("This completes the chunk called write_personnel_vax_data_to_file.")
+
+```
+
+```{r appendix_list_of_col_names, include=FALSE, eval=TRUE, echo=FALSE}
+
+# Save the column names into a list or something 
+my_cols <- colnames(j_latest_week_a)
+
+# Generate a list of numbers up to the number of the last column in our data set
+col_nums <- 1:ncol(j_latest_week_a)
+
+# Make these two into a data frame for presentation purposes. 
+column_kable_info <- data.frame(my_cols, col_nums)
+
+print("This completes the chunk called appendix_list_of_col_names.")
+
+```
+
+********
+
+### Appendix
+
+Below is the list of all the columns, or fields, that appeared in the latest week of the data. The fields "week_ending" and "which_week" were created by Jennifer P. for use in cleaning and analyzing the data and do not come from CMS. 
+
+`r knitr::kable(column_kable_info, col.names=c("Column name", "Position number of column"), row.names = FALSE, digits=1, caption="Columns in this week's data set")`
+
+
+```{r the_end, include=FALSE, eval=TRUE, echo=FALSE}
+#30 
+
+
+print("This completes the chunk called the_end.")
+```
